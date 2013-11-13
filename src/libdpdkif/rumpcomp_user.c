@@ -60,8 +60,7 @@
 /* change blacklist parameters (-b) if necessary */
 static const char *ealargs[] = {
 	"if_dpdk",
-	"-b 00:00:03.0",
-	"-c 1",
+	"-c 7",
 	"-n 1",
 };
 
@@ -70,7 +69,7 @@ static const char *ealargs[] = {
 
 /* change to the init method of your NIC driver */
 #ifndef PMD_INIT
-#define PMD_INIT rte_igb_pmd_init
+#define PMD_INIT rte_pmd_init_all
 #endif
 
 /* Receive packets in bursts of 16 per read */
@@ -89,16 +88,16 @@ static const char *ealargs[] = {
 /* these thresholds don't matter at this stage of optimizing */
 static const struct rte_eth_rxconf rxconf = {
 	.rx_thresh = {
-		.pthresh = 1,
-		.hthresh = 1,
-		.wthresh = 1,
+		.pthresh = 8,
+		.hthresh = 8,
+		.wthresh = 4,
 	},
 };
 static const struct rte_eth_txconf txconf = {
 	.tx_thresh = {
-		.pthresh = 1,
-		.hthresh = 1,
-		.wthresh = 1,
+		.pthresh = 36,
+		.hthresh = 0,
+		.wthresh = 0,
 	},
 };
 
@@ -160,18 +159,26 @@ globalinit(struct virtif_user *viu)
  	return rv;
 }
 
+static uint32_t s_alloced = 0;
+static void 
+free_mbuf(struct mbuf * m, void * data, size_t size, void * arg)
+{
+  if (arg) {
+    printf("free %p, alloced = %u\n", arg, s_alloced--);
+    rte_pktmbuf_free((struct rte_mbuf *) arg);
+  }
+}
+
 /*
  * Get mbuf off of interface, push it up into the TCP/IP stack.
  * TODO: share TCP/IP stack mbufs with DPDK mbufs to avoid
  * data copy (in rump_virtif_pktdeliver()).
  */
-#define STACK_IOV 16
 static void
 deliverframe(struct virtif_user *viu)
 {
 	struct rte_mbuf *m, *m0;
-	struct iovec iov[STACK_IOV];
-	struct iovec *iovp, *iovp0;
+	struct mbuf *mh, *md;
 
 	assert(viu->viu_nbufpkts > 0 && viu->viu_bufidx < MAX_PKT_BURST);
 	m0 = viu->viu_m_pkts[viu->viu_bufidx];
@@ -179,24 +186,34 @@ deliverframe(struct virtif_user *viu)
 	viu->viu_bufidx++;
 	viu->viu_nbufpkts--;
 
-	if (m0->pkt.nb_segs > STACK_IOV) {
-		iovp = malloc(sizeof(*iovp) * m0->pkt.nb_segs);
-		if (iovp == NULL)
-			return; /* drop */
-	} else {
-		iovp = iov;
+	mh = rump_mbuf_get_hdr(
+		viu->viu_virtifsc,
+		rte_pktmbuf_pkt_len(m0));
+	if (NULL == mh) {
+		rte_pktmbuf_free(m0);
+		return;
 	}
-	iovp0 = iovp;
+	s_alloced++;
 
-	for (m = m0; m; m = m->pkt.next, iovp++) {
-		iovp->iov_base = rte_pktmbuf_mtod(m, void *);
-		iovp->iov_len = rte_pktmbuf_data_len(m);
+	rump_mbuf_set_ext(
+		mh,
+		rte_pktmbuf_mtod(m0, void *),
+		rte_pktmbuf_data_len(m0),
+		free_mbuf,
+		m0);
+
+	for (m = m0->pkt.next; m; m = m->pkt.next) {
+		md = rump_mbuf_add_ext(
+			mh,
+			rte_pktmbuf_mtod(m, void *),
+			rte_pktmbuf_data_len(m));
+		if (NULL == md) {
+			rte_pktmbuf_free(m0);
+			return;
+		}
 	}
-	rump_virtif_pktdeliver(viu->viu_virtifsc, iovp0, iovp-iovp0);
-
-	rte_pktmbuf_free(m0);
-	if (iovp0 != iov)
-		free(iovp0);
+	
+	rump_virtif_deliver(viu->viu_virtifsc, mh);
 }
 
 static void *

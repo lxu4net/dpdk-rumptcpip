@@ -248,3 +248,48 @@ rump_virtif_pktdeliver(struct virtif_sc *sc, struct iovec *iov, size_t iovlen)
 	ether_input(ifp, m);
 	KERNEL_UNLOCK_LAST(NULL);
 }
+
+struct mbuf *
+rump_mbuf_get_hdr(struct virtif_sc *sc, size_t pkt_len) 
+{
+  struct mbuf *mh = m_gethdr(M_NOWAIT, MT_DATA);
+  if (mh == NULL)
+    return NULL; /* drop packet */
+  mh->m_len = mh->m_pkthdr.len = pkt_len;
+  mh->m_pkthdr.rcvif = &sc->sc_ec.ec_if;
+  return mh;
+}
+
+struct mbuf *
+rump_mbuf_set_ext(struct mbuf *mh, void * buf, size_t len, ext_free_t ext_free,
+                  void *arg) 
+{
+  MEXTADD(mh, buf, len, MT_DATA, ext_free, arg);
+  return mh;
+}
+
+struct mbuf *
+rump_mbuf_add_ext(struct mbuf *mh, void * buf, size_t len) 
+{
+  struct mbuf *m = m_get(M_NOWAIT, mh->m_type);
+  if (m == NULL)
+    return NULL; /* drop packet */
+  MEXTADD(m, buf, len, MT_DATA, NULL, NULL);
+  m_add(mh, m);
+  return mh;
+}
+
+void 
+rump_virtif_deliver(struct virtif_sc *sc, struct mbuf *m) 
+{
+  struct ifnet *ifp = &sc->sc_ec.ec_if;
+
+  if ((ifp->if_flags & IFF_RUNNING) == 0)
+    return;
+
+  KERNEL_LOCK(1, NULL);
+  bpf_mtap(ifp, m);
+  ether_input(ifp, m);
+  KERNEL_UNLOCK_LAST(NULL);
+}
+

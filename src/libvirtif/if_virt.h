@@ -25,3 +25,12 @@
 
 struct virtif_sc;
 void rump_virtif_pktdeliver(struct virtif_sc *, struct iovec *, size_t);
+
+struct mbuf;
+typedef void (*ext_free_t)(struct mbuf *, void *, size_t, void *);
+struct mbuf * rump_mbuf_get_hdr(struct virtif_sc *sc, size_t pkt_len);
+struct mbuf * rump_mbuf_set_ext(struct mbuf *m, void * buf, size_t len,
+                                ext_free_t free, void *arg);
+struct mbuf * rump_mbuf_add_ext(struct mbuf *m, void * buf, size_t size);
+void rump_virtif_deliver(struct virtif_sc *, struct mbuf *);
+
